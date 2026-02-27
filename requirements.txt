@@ -1,0 +1,10 @@
+streamlit
+yfinance
+requests
+pandas
+plotly
+transformers
+torch
+beautifulsoup4
+lxml
+html5lib
