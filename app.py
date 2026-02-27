@@ -12,7 +12,15 @@ def load_models():
     kr_model = pipeline("text-classification", model="snunlp/KR-FinBERT-SC")
     return us_model, kr_model
 
+@st.cache_data
+def load_ticker_mapping():
+    try:
+        return pd.read_csv('ticker_mapping.csv', dtype=str)
+    except Exception:
+        return pd.DataFrame()
+
 us_analyzer, kr_analyzer = load_models()
+df_tickers = load_ticker_mapping()
 
 ticker_to_name = {
     "NVDA": "엔비디아", "TSLA": "테슬라", "AAPL": "애플",
@@ -56,7 +64,7 @@ for i, (name, symbol) in enumerate(indices.items()):
 st.divider()
 st.header("2. 종목 주요 지표 및 뉴스 분석")
 market_choice = st.radio("시장을 선택하세요:", ("한국장 (Naver News)", "미국장 (Yahoo Finance)"))
-ticker_input = st.text_input("분석할 티커를 입력하세요 (예: NVDA, 005930, 005380):").upper()
+raw_ticker_input = st.text_input("분석할 종목명 또는 티커를 입력하세요 (예: 삼성전자, 005930, AAPL):").strip()
 
 def format_market_cap(mcap, market):
     if pd.isna(mcap) or mcap is None: 
@@ -72,10 +80,17 @@ def format_market_cap(mcap, market):
         else: return f"{mcap:,.0f}"
 
 if st.button("데이터 분석 실행"):
-    if not ticker_input:
-        st.warning("티커를 입력해주세요.")
+    if not raw_ticker_input:
+        st.warning("종목명이나 티커를 입력해주세요.")
     else:
-        search_ticker = ticker_input if market_choice == "미국장 (Yahoo Finance)" else f"{ticker_input}.KS"
+        converted_ticker = raw_ticker_input.upper()
+        
+        if not df_tickers.empty:
+            match_name = df_tickers[df_tickers['Name'].str.upper() == raw_ticker_input.upper()]
+            if not match_name.empty:
+                converted_ticker = str(match_name.iloc[0]['Ticker']).strip()
+        
+        search_ticker = converted_ticker if market_choice == "미국장 (Yahoo Finance)" else f"{converted_ticker}.KS"
         ticker_obj = yf.Ticker(search_ticker)
         hist_data = ticker_obj.history(period="1y") 
         
@@ -96,7 +111,7 @@ if st.button("데이터 분석 실행"):
             std_return = daily_returns.std()
             color_1y = "#ef4444" if mean_return > 0 else "#3b82f6"
             
-            st.markdown(f"### [{ticker_input}] 핵심 지표 (현재가: {curr_price:,.2f})")
+            st.markdown(f"### [{converted_ticker}] 핵심 지표 (현재가: {curr_price:,.2f})")
             
             m_col1, m_col2, m_col3 = st.columns(3)
             with m_col1: st.markdown(f"<div style='padding: 15px; border: 1px solid #555; border-radius: 10px;'><p style='margin:0; font-size:14px;'>전일 대비 (1D)</p><h3 style='margin:0; color:{color_1d};'>{change_1d:+,.2f} ({pct_1d:+.2f}%)</h3></div>", unsafe_allow_html=True)
@@ -160,7 +175,7 @@ if st.button("데이터 분석 실행"):
 
         if market_choice == "한국장 (Naver News)" and (needs_chart or needs_val):
             try:
-                url = f"https://finance.naver.com/item/main.naver?code={ticker_input}"
+                url = f"https://finance.naver.com/item/main.naver?code={converted_ticker}"
                 r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
                 dfs = pd.read_html(io.StringIO(r.text), encoding='euc-kr')
                 
@@ -305,7 +320,7 @@ if st.button("데이터 분석 실행"):
                 st.error("최신 영문 뉴스를 불러오지 못했습니다.")
                 
         elif market_choice == "한국장 (Naver News)":
-            search_keyword = ticker_to_name.get(ticker_input, ticker_input) 
+            search_keyword = ticker_to_name.get(raw_ticker_input, raw_ticker_input) 
             
             if not user_client_id or not user_client_secret:
                 st.error("🚨 좌측 사이드바에서 네이버 API 키를 먼저 입력해주세요!")
