@@ -2,9 +2,11 @@ import streamlit as st
 import yfinance as yf
 import requests
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from transformers import pipeline
 import io
+import datetime
 
 @st.cache_resource
 def load_models():
@@ -28,7 +30,7 @@ ticker_to_name = {
     "005380": "현대차"
 }
 
-st.set_page_config(layout="wide", page_title="글로벌 금융 감성 분석")
+st.set_page_config(layout="wide", page_title="글로벌 금융 감성 분석 대시보드")
 
 with st.sidebar:
     st.header("🔑 API 설정 (한국장 전용)")
@@ -62,7 +64,38 @@ for i, (name, symbol) in enumerate(indices.items()):
             st.markdown(f"<div style='padding: 10px; border: 1px solid #555; border-radius: 8px;'><p style='margin:0; font-size:14px; font-weight:bold;'>{name}</p><h3 style='margin:0; color:{color};'>{curr:,.2f}</h3><p style='margin:0; color:{color}; font-size:14px;'>{change:+,.2f} ({pct:+.2f}%)</p></div>", unsafe_allow_html=True)
 
 st.divider()
-st.header("2. 종목 주요 지표 및 뉴스 분석")
+
+st.header("2. KOSPI200 선물 매매동향 추적 (스마트머니)")
+st.caption("💡 외국인과 기관의 선물 포지션 추이를 통해 시장의 방향성(롱/숏)을 가늠합니다. (현재 KRX 구조상 테스트용 시뮬레이션 데이터로 렌더링됩니다.)")
+
+def generate_mock_futures_data():
+    dates = pd.date_range(end=datetime.date.today(), periods=10, freq='B')
+    foreign = np.random.randint(-8000, 2000, size=10)
+    institution = np.random.randint(-1000, 5000, size=10)
+    retail = -(foreign + institution)
+    return pd.DataFrame({'Date': dates, '외국인': foreign, '기관': institution, '개인': retail}).set_index('Date')
+
+df_futures = generate_mock_futures_data()
+
+fig_futures = go.Figure()
+fig_futures.add_trace(go.Bar(x=df_futures.index, y=df_futures['외국인'], name='외국인 (계약)', marker_color='#ef4444'))
+fig_futures.add_trace(go.Bar(x=df_futures.index, y=df_futures['기관'], name='기관 (계약)', marker_color='#3b82f6'))
+fig_futures.add_trace(go.Bar(x=df_futures.index, y=df_futures['개인'], name='개인 (계약)', marker_color='#10b981'))
+
+df_futures['외국인 누적'] = df_futures['외국인'].cumsum()
+fig_futures.add_trace(go.Scatter(x=df_futures.index, y=df_futures['외국인 누적'], name='외국인 누적(계약)', mode='lines+markers', line=dict(color='yellow', width=2), yaxis='y2'))
+
+fig_futures.update_layout(
+    template='plotly_dark', height=400, margin=dict(l=0, r=0, t=30, b=0),
+    barmode='group',
+    yaxis=dict(title='일별 순매수 (계약)'),
+    yaxis2=dict(title='누적 순매수 (계약)', overlaying='y', side='right', showgrid=False),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+st.plotly_chart(fig_futures, use_container_width=True)
+
+st.divider()
+st.header("3. 종목 주요 지표 및 뉴스 분석")
 market_choice = st.radio("시장을 선택하세요:", ("한국장 (Naver News)", "미국장 (Yahoo Finance)"))
 raw_ticker_input = st.text_input("분석할 종목명 또는 티커를 입력하세요 (예: 삼성전자, 005930, AAPL):").strip()
 
@@ -133,6 +166,41 @@ if st.button("데이터 분석 실행"):
             fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Lower_Band'], line=dict(color='gray', width=1, dash='dash'), name='하단 밴드 (-2 STD)', fill='tonexty', fillcolor='rgba(128,128,128,0.1)'))
             fig.update_layout(xaxis_rangeslider_visible=False, template='plotly_dark', height=500, margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("#### 🎯 단기 변동성 돌파 타겟 계산기 (Volatility Breakout)")
+            
+            v_col1, v_col2 = st.columns([1, 2])
+            with v_col1:
+                k_val = st.slider("노이즈 필터 (K값)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
+                atr_window = st.number_input("ATR 산출 기간 입력 (예: 14, 20)", min_value=1, max_value=100, value=14, step=1)
+            
+            with v_col2:
+                today_open = hist_data['Open'].iloc[-1]
+                prev_high = hist_data['High'].iloc[-2]
+                prev_low = hist_data['Low'].iloc[-2]
+                prev_close = hist_data['Close'].iloc[-2]
+                
+                range_basic = prev_high - prev_low
+                target_basic = today_open + (range_basic * k_val)
+                
+                hist_data['TR'] = np.maximum(
+                    hist_data['High'] - hist_data['Low'],
+                    np.maximum(
+                        abs(hist_data['High'] - hist_data['Close'].shift(1)),
+                        abs(hist_data['Low'] - hist_data['Close'].shift(1))
+                    )
+                )
+                hist_data['ATR'] = hist_data['TR'].rolling(window=atr_window).mean()
+                current_atr = hist_data['ATR'].iloc[-2]
+                target_atr = today_open + (current_atr * k_val)
+                
+                st.markdown(f"<div style='padding: 15px; background-color:#1e1e1e; border-radius: 10px;'>"
+                            f"<li><b>전일 고가/저가</b>: {prev_high:,.2f} / {prev_low:,.2f} (변동폭: {range_basic:,.2f})</li>"
+                            f"<li><b>당일 시가</b>: {today_open:,.2f}</li>"
+                            f"<li><b>수식 1 (기본)</b>: 당일 시가 + (전일 변동폭 × {k_val}) = <span style='color:#ef4444; font-size:18px; font-weight:bold;'>{target_basic:,.2f}</span> 돌파 시 매수</li>"
+                            f"<li><b>수식 2 (ATR 기반)</b>: 당일 시가 + (최근 {atr_window}일 ATR({current_atr:,.2f}) × {k_val}) = <span style='color:#ef4444; font-size:18px; font-weight:bold;'>{target_atr:,.2f}</span> 돌파 시 매수</li>"
+                            f"</div>", unsafe_allow_html=True)
+                
         else:
             st.warning("상장 기간이 짧아 데이터를 충분히 불러올 수 없습니다.")
 
