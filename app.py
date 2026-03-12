@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import requests
@@ -96,7 +95,7 @@ fig_futures.update_layout(
 st.plotly_chart(fig_futures, use_container_width=True)
 
 st.divider()
-st.header("3. 종목 주요 지표 및 뉴스 분석")
+st.header("3. 종목 주요 지표 및 지지/저항 분석")
 
 if 'run_analysis' not in st.session_state:
     st.session_state['run_analysis'] = False
@@ -174,18 +173,35 @@ if st.session_state['run_analysis']:
         hist_data['Upper_Band'] = hist_data['SMA_20'] + (hist_data['STD_20'] * 2)
         hist_data['Lower_Band'] = hist_data['SMA_20'] - (hist_data['STD_20'] * 2)
         
+        hist_data['Rolling_Max_20'] = hist_data['High'].rolling(window=20).max()
+        hist_data['Rolling_Min_20'] = hist_data['Low'].rolling(window=20).min()
+        
         plot_data = hist_data.tail(60)
 
-        st.markdown("#### 📊 주가 및 볼린저 밴드 (최근 60일)")
+        vol_bins = pd.cut(plot_data['Close'], bins=20)
+        vol_profile = plot_data.groupby(vol_bins, observed=False)['Volume'].sum()
+        if not vol_profile.empty:
+            poc_interval = vol_profile.idxmax()
+            poc_price = poc_interval.mid
+        else:
+            poc_price = curr_price
+
+        st.markdown("#### 📊 주가, 볼린저 밴드 및 지지/저항선 (최근 60일)")
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=plot_data.index, open=plot_data['Open'], high=plot_data['High'], low=plot_data['Low'], close=plot_data['Close'], name='주가'))
         fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['SMA_20'], line=dict(color='orange', width=1.5), name='20일 평균선'))
         fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Upper_Band'], line=dict(color='gray', width=1, dash='dash'), name='상단 밴드 (+2 STD)'))
         fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Lower_Band'], line=dict(color='gray', width=1, dash='dash'), name='하단 밴드 (-2 STD)', fill='tonexty', fillcolor='rgba(128,128,128,0.1)'))
+        
+        fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Rolling_Max_20'], line=dict(color='cyan', width=1.5, dash='dot'), name='20일 국소 고점 (저항)'))
+        fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Rolling_Min_20'], line=dict(color='magenta', width=1.5, dash='dot'), name='20일 국소 저점 (지지)'))
+        
+        fig.add_hline(y=poc_price, line_width=2, line_dash="solid", line_color="red", annotation_text="POC (최대 매물대)", annotation_position="bottom right")
+
         fig.update_layout(xaxis_rangeslider_visible=False, template='plotly_dark', height=500, margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
         
-        st.markdown("#### 🎯 단기 변동성 돌파 타겟 계산기 (Volatility Breakout)")
+        st.markdown("#### 🎯 단기 변동성 돌파 및 피봇(Pivot) 포인트 계산기")
         
         v_col1, v_col2 = st.columns([1, 2])
         with v_col1:
@@ -212,11 +228,26 @@ if st.session_state['run_analysis']:
             current_atr = hist_data['ATR'].iloc[-2]
             target_atr = today_open + (current_atr * k_val)
             
-            st.markdown(f"<div style='padding: 15px; background-color:#1e1e1e; border-radius: 10px;'>"
+            pivot_p = (prev_high + prev_low + prev_close) / 3
+            pivot_r1 = (pivot_p * 2) - prev_low
+            pivot_s1 = (pivot_p * 2) - prev_high
+            pivot_r2 = pivot_p + range_basic
+            pivot_s2 = pivot_p - range_basic
+
+            st.markdown(f"<div style='padding: 15px; background-color:#1e1e1e; border-radius: 10px; margin-bottom: 15px;'>"
+                        f"<p style='margin:0; font-weight:bold; color:#3b82f6;'>[변동성 돌파 매수 타점]</p>"
                         f"<li><b>전일 고가/저가</b>: {prev_high:,.2f} / {prev_low:,.2f} (변동폭: {range_basic:,.2f})</li>"
-                        f"<li><b>당일 시가</b>: {today_open:,.2f}</li>"
-                        f"<li><b>수식 1 (기본)</b>: 당일 시가 + (전일 변동폭 × {k_val}) = <span style='color:#ef4444; font-size:18px; font-weight:bold;'>{target_basic:,.2f}</span> 돌파 시 매수</li>"
-                        f"<li><b>수식 2 (ATR 기반)</b>: 당일 시가 + (최근 {atr_window}일 ATR({current_atr:,.2f}) × {k_val}) = <span style='color:#ef4444; font-size:18px; font-weight:bold;'>{target_atr:,.2f}</span> 돌파 시 매수</li>"
+                        f"<li><b>수식 1 (기본)</b>: 당일 시가({today_open:,.2f}) + (전일 변동폭 × {k_val}) = <span style='color:#ef4444; font-size:16px; font-weight:bold;'>{target_basic:,.2f}</span> 돌파 시 매수</li>"
+                        f"<li><b>수식 2 (ATR 기반)</b>: 당일 시가({today_open:,.2f}) + (최근 {atr_window}일 ATR({current_atr:,.2f}) × {k_val}) = <span style='color:#ef4444; font-size:16px; font-weight:bold;'>{target_atr:,.2f}</span> 돌파 시 매수</li>"
+                        f"</div>", unsafe_allow_html=True)
+            
+            st.markdown(f"<div style='padding: 15px; background-color:#1e1e1e; border-radius: 10px;'>"
+                        f"<p style='margin:0; font-weight:bold; color:#10b981;'>[단기 피봇(Pivot) 지지 및 저항선]</p>"
+                        f"<li><b>2차 저항선 (R2)</b>: {pivot_r2:,.2f}</li>"
+                        f"<li><b>1차 저항선 (R1)</b>: {pivot_r1:,.2f}</li>"
+                        f"<li><b>중심선 (P)</b>: {pivot_p:,.2f}</li>"
+                        f"<li><b>1차 지지선 (S1)</b>: {pivot_s1:,.2f}</li>"
+                        f"<li><b>2차 지지선 (S2)</b>: {pivot_s2:,.2f}</li>"
                         f"</div>", unsafe_allow_html=True)
             
     else:
